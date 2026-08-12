@@ -277,25 +277,25 @@ parent = VikingURI(uri).parent.uri  # viking://resources/docs
 # 仅在资源中搜索
 results = client.find(
     "认证",
-    target_uri="viking://resources/"
+    {"target_uri": "viking://resources/"},
 )
 
 # 仅在当前用户资源中搜索
 results = client.find(
     "私有项目笔记",
-    target_uri="viking://user/resources/"
+    {"target_uri": "viking://user/resources/"},
 )
 
 # 仅在用户记忆中搜索
 results = client.find(
     "编码偏好",
-    target_uri="viking://user/memories/"
+    {"target_uri": "viking://user/memories/"},
 )
 
 # 仅在技能中搜索
 results = client.find(
     "网络搜索",
-    target_uri="viking://user/skills/"
+    {"target_uri": "viking://user/skills/"},
 )
 ```
 

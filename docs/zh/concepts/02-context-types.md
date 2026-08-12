@@ -32,13 +32,13 @@
 # 添加资源
 client.add_resource(
     "https://docs.example.com/api.pdf",
-    reason="API 文档"
+    {"reason": "API 文档"},
 )
 
 # 搜索资源
 results = client.find(
     "认证方法",
-    target_uri="viking://resources/"
+    {"target_uri": "viking://resources/"},
 )
 ```
 
@@ -82,7 +82,7 @@ task = await client.get_task(commit["task_id"])  # 轮询直到 task["status"] =
 # 搜索记忆
 results = await client.find(
     "用户界面偏好",
-    target_uri="viking://user/memories/"
+    {"target_uri": "viking://user/memories/"},
 )
 ```
 
@@ -137,13 +137,13 @@ ov skills add search-web -p viking://agent/skills
 # 搜索用户技能
 results = await client.find(
     "网络搜索",
-    target_uri="viking://user/skills/"
+    {"target_uri": "viking://user/skills/"},
 )
 
 # 搜索全局 agent 技能
 results = await client.find(
     "网络搜索",
-    target_uri="viking://agent/skills/"
+    {"target_uri": "viking://agent/skills/"},
 )
 ```
 

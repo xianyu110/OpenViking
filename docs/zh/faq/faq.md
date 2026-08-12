@@ -163,14 +163,16 @@ Embedding、VLM、存储等服务配置由 OpenViking Server 通过 `ov.conf` �
 # 添加单个文件
 await client.add_resource(
     "./document.pdf",
-    reason="项目技术文档",  # 描述资源用途，提升检索质量
-    to="viking://resources/docs/"  # 指定存储位置
+    {
+        "reason": "项目技术文档",  # 描述资源用途，提升检索质量
+        "to": "viking://resources/docs/",  # 指定存储位置
+    },
 )
 
 # 添加网页
 await client.add_resource(
     "https://example.com/api-docs",
-    reason="API 参考文档"
+    {"reason": "API 参考文档"},
 )
 
 # 等待处理完成
@@ -190,7 +192,7 @@ await client.wait_processed()
 # find(): 简单直接的语义搜索
 results = await client.find(
     "OAuth 认证流程",
-    target_uri="viking://resources/"
+    {"target_uri": "viking://resources/"},
 )
 
 # search(): 复杂任务，需要意图分析
@@ -346,7 +348,7 @@ OpenViking 使用分数传播机制：
 
 4. **查看提取的记忆**
    ```python
-   memories = await client.find("", target_uri="viking://user/memories/")
+   memories = await client.find("", {"target_uri": "viking://user/memories/"})
    ```
 
 ### 性能问题

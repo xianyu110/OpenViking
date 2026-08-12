@@ -281,31 +281,31 @@ parent = VikingURI(uri).parent.uri  # viking://resources/docs
 # Search only in resources
 results = client.find(
     "authentication",
-    target_uri="viking://resources/"
+    {"target_uri": "viking://resources/"},
 )
 
 # Search only in current-user resources
 results = client.find(
     "private project notes",
-    target_uri="viking://user/resources/"
+    {"target_uri": "viking://user/resources/"},
 )
 
 # Search only in user memories
 results = client.find(
     "coding preferences",
-    target_uri="viking://user/memories/"
+    {"target_uri": "viking://user/memories/"},
 )
 
 # Search only in user skills
 results = client.find(
     "web search",
-    target_uri="viking://user/skills/"
+    {"target_uri": "viking://user/skills/"},
 )
 
 # Search only in global agent skills
 results = client.find(
     "web search",
-    target_uri="viking://agent/skills/"
+    {"target_uri": "viking://agent/skills/"},
 )
 ```
 

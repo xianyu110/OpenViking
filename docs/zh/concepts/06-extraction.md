@@ -164,7 +164,7 @@ SemanticMsg(
 # 添加资源
 await client.add_resource(
     "/path/to/doc.pdf",
-    reason="API 文档"
+    {"reason": "API 文档"},
 )
 
 # 流程: Parser → TreeBuilder(scope=resources) → SemanticQueue

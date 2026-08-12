@@ -191,24 +191,26 @@ results = client.find("how to authenticate users")
 # Search with filter and time range
 recent_emails = client.find(
     "invoice",
-    target_uri="viking://resources/email",
-    since="7d",
-    time_field="created_at",
+    {
+        "target_uri": "viking://resources/email",
+        "since": "7d",
+        "time_field": "created_at",
+    },
 )
 
 # Search only memories and resources
 typed_results = client.find(
     "authentication",
-    context_type=[ContextType.MEMORY, ContextType.RESOURCE],
+    {"context_type": [ContextType.MEMORY, ContextType.RESOURCE]},
 )
 
 # Search by local image, bytes, data URI, HTTP URL, or viking:// URI
-image_results = client.find(image="/path/to/photo.png")
+image_results = client.find("", {"image": "/path/to/photo.png"})
 
 # Search by explicit retrieval tags. Multiple tags are AND-ed.
 tagged_results = client.find(
     "rollback runbook",
-    tags=["env=prod", "team=search"],
+    {"tags": ["env=prod", "team=search"]},
 )
 
 # Iterate through results
@@ -226,19 +228,19 @@ for ctx in results.resources:
 # Search only in resources
 results = client.find(
     "authentication",
-    target_uri="viking://resources"
+    {"target_uri": "viking://resources"},
 )
 
 # Search only in user memories
 results = client.find(
     "preferences",
-    target_uri="viking://user/memories"
+    {"target_uri": "viking://user/memories"},
 )
 
 # Search only in current-user resources
 results = client.find(
     "private docs",
-    target_uri="viking://user/resources"
+    {"target_uri": "viking://user/resources"},
 )
 
 # Search with the peer collection filtered to one peer
@@ -252,13 +254,13 @@ peer_results = peer_client.find("invoice follow-up")
 # Search only in skills
 results = client.find(
     "web search",
-    target_uri="viking://user/skills"
+    {"target_uri": "viking://user/skills"},
 )
 
 # Search in specific project
 results = client.find(
     "API endpoints",
-    target_uri="viking://resources/my-project"
+    {"target_uri": "viking://resources/my-project"},
 )
 ```
 
@@ -1110,7 +1112,7 @@ client.initialize()
 # Search in relevant scope for better results
 results = client.find(
     "error handling",
-    target_uri="viking://resources/my-project"
+    {"target_uri": "viking://resources/my-project"},
 )
 ```
 

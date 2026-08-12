@@ -32,13 +32,13 @@ Resources are external knowledge that Agents can reference.
 # Add resource
 client.add_resource(
     "https://docs.example.com/api.pdf",
-    reason="API documentation"
+    {"reason": "API documentation"},
 )
 
 # Search resources
 results = client.find(
     "authentication methods",
-    target_uri="viking://resources/"
+    {"target_uri": "viking://resources/"},
 )
 ```
 
@@ -82,7 +82,7 @@ task = await client.get_task(commit["task_id"])  # Poll until task["status"] == 
 # Search memories
 results = await client.find(
     "UI preferences",
-    target_uri="viking://user/memories/"
+    {"target_uri": "viking://user/memories/"},
 )
 ```
 
@@ -137,13 +137,13 @@ ov skills add search-web -p viking://agent/skills
 # Search user skills
 results = await client.find(
     "web search",
-    target_uri="viking://user/skills/"
+    {"target_uri": "viking://user/skills/"},
 )
 
 # Search global agent skills
 results = await client.find(
     "web search",
-    target_uri="viking://agent/skills/"
+    {"target_uri": "viking://agent/skills/"},
 )
 ```
 

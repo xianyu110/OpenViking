@@ -317,7 +317,7 @@ print(f"Added: {result['uri']}")
 print(f"Auxiliary files: {result['auxiliary_files']}")
 
 # Wait for processing completion
-result = client.add_skill("./skills/my-skill/", wait=True)
+result = client.add_skill("./skills/my-skill/", {"wait": True})
 client.wait_processed()
 ```
 
@@ -545,7 +545,7 @@ curl -X POST http://localhost:1933/api/v1/skills/find \
 
 ```python
 validated = client.validate_skill({"name": "search-web", "description": "..."})
-updated = client.update_skill("search-web", "./skills/search-web", wait=True)
+updated = client.update_skill("search-web", "./skills/search-web", {"wait": True})
 ```
 
 **TypeScript SDK**
