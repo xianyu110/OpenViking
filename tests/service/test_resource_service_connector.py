@@ -11,11 +11,14 @@ import httpx
 import pytest
 
 from openviking.connector import delegate as connector_delegate_module
+from openviking.parse.accessors.base import LocalResource, SourceType
+from openviking.parse.accessors.staged_resource import StagedResource
 from openviking.parse.mode import ParseMode
 from openviking.server.identity import RequestContext, Role
 from openviking.service import resource_service as resource_service_module
 from openviking.service.resource_service import ResourceService
 from openviking.storage.queuefs.add_resource_msg import AddResourceMsg
+from openviking.storage.queuefs.queue_manager import QueueManager
 from openviking_cli.exceptions import InvalidArgumentError
 from openviking_cli.session.user_id import UserIdentifier
 
@@ -793,6 +796,99 @@ async def test_native_git_nested_auth_runs_request_local_before_durable_queue(
     assert call["defer_post_processing"] is True
     assert call["branch"] == "main"
     assert call["auth_config"] == {"username": "oauth2", "token": "secret-token"}
+
+
+@pytest.mark.asyncio
+async def test_native_git_wait_false_stages_private_auth_without_persisting_secret(
+    monkeypatch,
+    connector_config,
+    ctx,
+    tmp_path,
+):
+    monkeypatch.setattr(resource_service_module, "is_git_repo_url", lambda _path: True)
+    repo_dir = tmp_path / "private"
+    repo_dir.mkdir()
+    (repo_dir / "README.md").write_text("# private\n")
+    prepared = LocalResource(
+        path=repo_dir,
+        source_type=SourceType.GIT,
+        original_source="https://git.example/org/private.git",
+        meta={"repo_name": "org/private", "resolved_name": "private"},
+        is_temporary=True,
+    )
+    resource_processor = SimpleNamespace(
+        prepare_resource=AsyncMock(return_value=prepared),
+        should_use_understanding_api=Mock(return_value=False),
+        tree_builder=SimpleNamespace(
+            resolve_target_uri=AsyncMock(
+                return_value=("viking://resources/private", None)
+            )
+        ),
+    )
+    lock = {"lease_ref": "lock-1"}
+    agfs = SimpleNamespace(
+        pathlock_acquire_tree=AsyncMock(return_value=lock),
+        pathlock_to_handoff=AsyncMock(return_value={"handle_id": "lock-1"}),
+        pathlock_handoff=AsyncMock(),
+        pathlock_release=AsyncMock(),
+    )
+    viking_fs = SimpleNamespace(
+        exists=AsyncMock(return_value=True),
+        _uri_to_path=lambda _uri, ctx: "/resources/private",
+        _async_agfs=agfs,
+        delete_temp=AsyncMock(),
+    )
+    service = ResourceService(
+        vikingdb=object(),
+        viking_fs=viking_fs,
+        resource_processor=resource_processor,
+        skill_processor=object(),
+    )
+    staged_source = {
+        "temp_uri": "viking://temp/acct/alice/job-1",
+        "source_uri": "viking://temp/acct/alice/job-1/source/private",
+        "source_name": "private",
+        "source_type": SourceType.GIT,
+        "original_source": "https://git.example/org/private.git",
+        "is_directory": True,
+        "meta": {"repo_name": "org/private", "resolved_name": "private"},
+    }
+    stage_resource = AsyncMock(return_value=StagedResource(**staged_source))
+    queue_manager = SimpleNamespace(enqueue=AsyncMock())
+    monkeypatch.setattr(
+        "openviking.parse.accessors.staged_resource.stage_resource",
+        stage_resource,
+    )
+    monkeypatch.setattr(
+        "openviking.storage.queuefs.get_queue_manager",
+        Mock(return_value=queue_manager),
+    )
+    monkeypatch.setattr(
+        "openviking.service.task_tracker.get_task_tracker",
+        Mock(return_value=_task_tracker()),
+    )
+
+    result = await service.add_resource(
+        path="https://git.example/org/private.git",
+        ctx=ctx,
+        to="viking://resources/private",
+        wait=False,
+        args={"auth_config": {"username": "oauth2", "token": "secret-token"}},
+    )
+
+    assert result["task_id"] == "task-1"
+    resource_processor.prepare_resource.assert_awaited_once()
+    assert resource_processor.prepare_resource.await_args.kwargs["auth_config"] == {
+        "username": "oauth2",
+        "token": "secret-token",
+    }
+    assert queue_manager.enqueue.await_args.args[0] == QueueManager.ADD_RESOURCE
+    payload = queue_manager.enqueue.await_args.args[1]
+    assert "secret-token" not in json.dumps(payload)
+    queued = AddResourceMsg.from_dict(payload)
+    assert queued.args["parser_backend"] == "internal"
+    assert queued.staged_source == staged_source
+    assert queued.parse_mode == "default"
 
 
 @pytest.mark.asyncio

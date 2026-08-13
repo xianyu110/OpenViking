@@ -1105,9 +1105,9 @@ class ResourceService:
                     watch_auth_state = create_git_http_auth_state(git_auth, path)
 
                 # The native Git queue is durable, so credentials must be consumed
-                # before crossing that boundary. Fetch and parse in this request;
-                # _execute_resource_ingestion only queues the credential-free
-                # prepared post-processing payload when defer_post_processing=True.
+                # before crossing that boundary. For wait=false, fetch with the
+                # credentials in this request, stage the resulting repository, and
+                # let the durable worker parse the credential-free snapshot.
                 request_local_kwargs = dict(kwargs)
                 request_local_kwargs["auth_config"] = {
                     "username": git_auth.username,
@@ -1133,6 +1133,8 @@ class ResourceService:
                     tag_mode=tag_mode,
                     enforce_public_remote_targets=enforce_public_remote_targets,
                     watch_auth_state=watch_auth_state,
+                    parser_args=normalized_args.processor_kwargs,
+                    defer_ingestion=not wait,
                     **request_local_kwargs,
                 )
             else:
@@ -1182,7 +1184,6 @@ class ResourceService:
                 defer_ingestion=(
                     not wait
                     and manage_watch
-                    and mode is ParseMode.DEFAULT
                     and (
                         is_remote_resource_source(path)
                         or (allow_local_path_resolution and len(path) <= 1024 and "\n" not in path)
@@ -1399,15 +1400,33 @@ class ResourceService:
                 elif not defer_target_resolution:
                     lock_lease = await _reserve_tree(root_uri)
 
-                enqueue_started = False
+                staged_source = None
+                source_enqueued = False
+
+                def _transfer_source_ownership() -> None:
+                    nonlocal source_enqueued
+                    source_enqueued = True
+
                 try:
                     queued_args = dict(parser_args or {})
-                    understanding_response_id = await self._resource_processor.submit_understanding(
-                        understanding_source,
-                        **queued_args,
-                    )
+                    understanding_response_id = None
+                    if direct_understanding and FEISHU_ACCESS_TOKEN_ARG in queued_args:
+                        understanding_response_id = (
+                            await self._resource_processor.submit_understanding(
+                                understanding_source,
+                                **queued_args,
+                            )
+                        )
                     queued_args.pop(FEISHU_ACCESS_TOKEN_ARG, None)
                     if prepared_resource is not None:
+                        from openviking.parse.accessors.staged_resource import stage_resource
+
+                        staged_source = await stage_resource(
+                            prepared_resource,
+                            viking_fs=self._viking_fs,
+                            ctx=ctx,
+                            original_source=str(source_info.source_path or path),
+                        )
                         prepared_resource.cleanup()
                         prepared_resource = None
 
@@ -1420,7 +1439,10 @@ class ResourceService:
                     msg = AddResourceMsg(
                         task_id=str(uuid4()),
                         telemetry_id=telemetry_id or None,
-                        path=path,
+                        path=str(source_info.source_path or path),
+                        staged_source=staged_source.to_dict()
+                        if staged_source is not None
+                        else None,
                         source_path=(source_name or "") if kwargs.get("temp_file_id") else path,
                         root_uri=root_uri,
                         account_id=ctx.account_id,
@@ -1450,17 +1472,24 @@ class ResourceService:
                         tags=tags,
                         tag_mode=tag_mode,
                     )
-                    enqueue_started = True
                     enqueue_lock = lock_lease
                     lock_lease = None
                     task = await self._enqueue_add_resource_job(
                         msg,
                         queue_name=QueueManager.EXTERNAL_PARSE,
                         resource_lock=enqueue_lock,
+                        on_enqueued=_transfer_source_ownership
+                        if staged_source is not None
+                        else None,
                     )
                 except BaseException:
-                    if not enqueue_started and lock_lease is not None:
+                    if lock_lease is not None:
                         await self._release_lock_ref(lock_lease)
+                    if staged_source is not None and not source_enqueued:
+                        await self._viking_fs.delete_temp(
+                            staged_source.temp_uri,
+                            ctx=ctx,
+                        )
                     raise
                 job_enqueued = True
                 logger.info(

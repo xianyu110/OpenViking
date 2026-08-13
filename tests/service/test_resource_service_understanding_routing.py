@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openviking.parse.accessors.base import LocalResource, SourceType
+from openviking.parse.accessors.staged_resource import StagedResource
 from openviking.parse.parsers.media.utils import MPEG_TS_PACKET_SIZE, MPEG_TS_PROBE_BYTES
 from openviking.server.identity import RequestContext, Role
 from openviking.service import resource_service as resource_service_module
@@ -80,6 +81,23 @@ async def test_extensionless_remote_url_queues_frozen_understanding_route(
         fail=AsyncMock(),
     )
     queue_manager = SimpleNamespace(enqueue=AsyncMock())
+    staged_source = {
+        "temp_uri": "viking://temp/acct/alice/job-1",
+        "source_uri": "viking://temp/acct/alice/job-1/source/download.pdf",
+        "source_name": "download.pdf",
+        "source_type": SourceType.HTTP,
+        "original_source": "https://example.com/download?id=1",
+        "is_directory": False,
+        "meta": {
+            "resolved_extension": ".pdf",
+            "original_filename": "manual.pdf",
+        },
+    }
+    stage_resource = AsyncMock(return_value=StagedResource(**staged_source))
+    monkeypatch.setattr(
+        "openviking.parse.accessors.staged_resource.stage_resource",
+        stage_resource,
+    )
     monkeypatch.setattr(resource_service_module, "is_git_repo_url", lambda _path: False)
     monkeypatch.setattr(
         "openviking.service.task_tracker.get_task_tracker",
@@ -114,10 +132,12 @@ async def test_extensionless_remote_url_queues_frozen_understanding_route(
     queued = AddResourceMsg.from_dict(message)
     assert queued.args["parser_backend"] == "understanding"
     assert queued.args["resolved_extension"] == ".pdf"
-    assert queued.understanding_response_id == "response-1"
+    assert queued.understanding_response_id is None
+    assert queued.staged_source == staged_source
     assert queued.source_name == "manual.pdf"
     assert not downloaded.exists()
-    processor.submit_understanding.assert_awaited_once_with(prepared)
+    stage_resource.assert_awaited_once()
+    processor.submit_understanding.assert_not_awaited()
     processor.process_resource.assert_not_awaited()
     agfs.pathlock_to_handoff.assert_awaited_once_with(lock)
     agfs.pathlock_handoff.assert_awaited_once_with(lock)
@@ -181,6 +201,23 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
         fail=AsyncMock(),
     )
     queue_manager = SimpleNamespace(enqueue=AsyncMock())
+    staged_source = {
+        "temp_uri": "viking://temp/acct/alice/job-1",
+        "source_uri": "viking://temp/acct/alice/job-1/source/sample.ts",
+        "source_name": "sample.ts",
+        "source_type": SourceType.HTTP,
+        "original_source": "https://example.com/video/sample.ts?sign=1",
+        "is_directory": False,
+        "meta": {
+            "resolved_extension": "mpegts",
+            "original_filename": "sample.ts",
+        },
+    }
+    stage_resource = AsyncMock(return_value=StagedResource(**staged_source))
+    monkeypatch.setattr(
+        "openviking.parse.accessors.staged_resource.stage_resource",
+        stage_resource,
+    )
     monkeypatch.setattr(resource_service_module, "is_git_repo_url", lambda _path: False)
     monkeypatch.setattr(
         "openviking.service.task_tracker.get_task_tracker",
@@ -211,7 +248,8 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
     }
     processor.prepare_resource.assert_awaited_once()
     processor.process_resource.assert_not_awaited()
-    processor.submit_understanding.assert_awaited_once_with(prepared)
+    stage_resource.assert_awaited_once()
+    processor.submit_understanding.assert_not_awaited()
     resolve_target_uri.assert_awaited_once()
     assert resolve_target_uri.await_args.kwargs["source_format"] == "video"
     _, message = queue_manager.enqueue.await_args.args
@@ -219,7 +257,8 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
     queued = AddResourceMsg.from_dict(message)
     assert queued.args["parser_backend"] == "understanding"
     assert queued.args["resolved_extension"] == "mpegts"
-    assert queued.understanding_response_id == "response-1"
+    assert queued.understanding_response_id is None
+    assert queued.staged_source == staged_source
     assert queued.source_name == "sample.ts"
     assert not downloaded.exists()
     agfs.pathlock_to_handoff.assert_awaited_once_with(lock)
