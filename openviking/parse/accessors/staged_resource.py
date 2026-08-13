@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 from openviking.server.identity import RequestContext
-from openviking.storage.viking_fs import LS_ALL_NODES
 from openviking.utils.path_safety import (
     safe_join_viking_uri,
     sanitize_relative_viking_path,
@@ -192,7 +191,7 @@ async def materialize_resource(
             bundle_uri,
             output="original",
             show_all_hidden=True,
-            node_limit=LS_ALL_NODES,
+            node_limit=None,
             level_limit=None,
             ctx=ctx,
         )

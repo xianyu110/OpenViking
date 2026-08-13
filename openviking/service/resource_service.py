@@ -1105,9 +1105,9 @@ class ResourceService:
                     watch_auth_state = create_git_http_auth_state(git_auth, path)
 
                 # The native Git queue is durable, so credentials must be consumed
-                # before crossing that boundary. For wait=false, fetch with the
-                # credentials in this request, stage the resulting repository, and
-                # let the durable worker parse the credential-free snapshot.
+                # before crossing that boundary. Fetch and parse in this request;
+                # _execute_resource_ingestion only queues the credential-free
+                # prepared post-processing payload when defer_post_processing=True.
                 request_local_kwargs = dict(kwargs)
                 request_local_kwargs["auth_config"] = {
                     "username": git_auth.username,
@@ -1133,8 +1133,6 @@ class ResourceService:
                     tag_mode=tag_mode,
                     enforce_public_remote_targets=enforce_public_remote_targets,
                     watch_auth_state=watch_auth_state,
-                    parser_args=normalized_args.processor_kwargs,
-                    defer_ingestion=not wait,
                     **request_local_kwargs,
                 )
             else:

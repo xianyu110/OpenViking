@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from openviking.parse.accessors.base import LocalResource, SourceType
-from openviking.parse.accessors.staged_resource import StagedResource
+from openviking.parse.accessors.staged_resource import StagedResource, materialize_resource
 from openviking.parse.understanding_api import PREPARED_RESPONSE_ID_ARG, UnderstandingAPI
 from openviking.server.identity import RequestContext, Role
 from openviking.service.resource_service import ResourceService
@@ -602,6 +602,41 @@ async def test_local_wait_false_queues_staged_source_before_parsing(monkeypatch,
     assert call.args[0].lock_handoff == {"handle_id": "lock-1"}
     resource_processor.process_resource.assert_not_awaited()
     agfs.pathlock_to_handoff.assert_awaited_once_with(resource_lock)
+
+
+@pytest.mark.asyncio
+async def test_materialize_staged_resource_uses_unbounded_tree(tmp_path):
+    staged = StagedResource(
+        temp_uri="viking://temp/user/job-1",
+        source_uri="viking://temp/user/job-1/source/document.md",
+        source_name="document.md",
+        source_type=SourceType.LOCAL,
+        original_source="document.md",
+        is_directory=False,
+        meta={"resolved_extension": ".md"},
+    )
+    file_content = b"# document\n"
+    viking_fs = SimpleNamespace(
+        tree=AsyncMock(
+            return_value=[
+                {
+                    "uri": "viking://temp/user/job-1/source/document.md",
+                    "rel_path": "document.md",
+                    "isDir": False,
+                }
+            ]
+        ),
+        read_file_bytes=AsyncMock(return_value=file_content),
+    )
+    ctx = RequestContext(user=UserIdentifier("account-1", "user-1"), role=Role.USER)
+
+    resource = await materialize_resource(staged, viking_fs=viking_fs, ctx=ctx)
+
+    assert resource.path.read_bytes() == file_content
+    assert resource.meta["_cleanup_path"]
+    viking_fs.tree.assert_awaited_once()
+    assert viking_fs.tree.await_args.kwargs["node_limit"] is None
+    assert viking_fs.tree.await_args.kwargs["level_limit"] is None
 
 
 @pytest.mark.asyncio
