@@ -925,7 +925,10 @@ def test_prepared_add_resource_payload_drops_nested_git_auth():
 
 
 @pytest.mark.asyncio
-async def test_request_local_git_auth_is_absent_from_real_prepared_queue_message(ctx, service):
+async def test_request_local_git_auth_is_absent_from_real_prepared_queue_message(
+    monkeypatch, ctx, service
+):
+    monkeypatch.setattr(resource_service_module, "is_git_repo_url", lambda _path: True)
     service._resource_processor = SimpleNamespace(
         process_resource=AsyncMock(
             return_value={

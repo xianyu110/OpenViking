@@ -3,6 +3,7 @@
 
 """ResourceService coverage for add_resource parse modes."""
 
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,6 +14,7 @@ from openviking.resource.watch_scheduler import WatchScheduler
 from openviking.server.identity import RequestContext, Role
 from openviking.service import resource_service as resource_service_module
 from openviking.service.resource_service import ResourceService
+from openviking.service.task_tracker import TaskStatus
 from openviking.storage.queuefs.add_resource_msg import AddResourceMsg
 from openviking_cli.exceptions import InvalidArgumentError
 from openviking_cli.session.user_id import UserIdentifier
@@ -50,6 +52,12 @@ def service(monkeypatch: pytest.MonkeyPatch) -> ResourceService:
     tracker = SimpleNamespace(
         create=AsyncMock(return_value=SimpleNamespace(task_id="task-1")),
         fail=AsyncMock(),
+        wait=AsyncMock(
+            return_value=SimpleNamespace(
+                status=TaskStatus.COMPLETED,
+                result={"root_uri": "viking://resources/test"},
+            )
+        ),
     )
     monkeypatch.setattr(
         "openviking.service.task_tracker.get_task_tracker",
@@ -75,6 +83,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> ResourceService:
         "_enqueue_add_resource_job",
         AsyncMock(return_value=SimpleNamespace(task_id="task-1")),
     )
+    instance.add_resource = partial(instance.add_resource, wait=True)
     return instance
 
 
@@ -286,12 +295,8 @@ async def test_native_git_enqueue_persists_internal_no_split_mode(
     service._preflight_git_source = AsyncMock(
         return_value=SimpleNamespace(source_name="repo", source_path=None)
     )
-    service._plan_resource_target = AsyncMock(
-        return_value=("viking://resources/repo", None)
-    )
-    service._enqueue_add_resource_job = AsyncMock(
-        return_value=SimpleNamespace(task_id="task-git")
-    )
+    service._plan_resource_target = AsyncMock(return_value=("viking://resources/repo", None))
+    service._enqueue_add_resource_job = AsyncMock(return_value=SimpleNamespace(task_id="task-git"))
 
     result = await service.enqueue_git_add_resource(
         path="https://github.com/volcengine/OpenViking.git",

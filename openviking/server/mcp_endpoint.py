@@ -865,6 +865,7 @@ async def add_resource(
                 wait=False,
                 watch_interval=watch_interval,
                 processing_mode=processing_mode,
+                allow_local_path_resolution=False,
                 enforce_public_remote_targets=True,
                 args=args,
                 tags=tags,

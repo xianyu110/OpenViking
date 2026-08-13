@@ -111,6 +111,8 @@ _ADD_RESOURCE_ARGS_RESERVED_FIELDS = frozenset(
         "parser_backend",
         "resolved_extension",
         "defer_post_processing",
+        "defer_ingestion",
+        "prepared_resource",
         "tags",
         "tag_mode",
     }
@@ -130,6 +132,8 @@ _INTERNAL_INGESTION_FIELDS = frozenset(
         "understanding_response_id",
         "parser_backend",
         "resolved_extension",
+        "defer_ingestion",
+        "prepared_resource",
     }
 )
 
@@ -452,6 +456,7 @@ class ResourceService:
         *,
         queue_name: str,
         resource_lock: Optional[Dict[str, Any]] = None,
+        on_enqueued: Optional[Callable[[], None]] = None,
     ) -> Any:
         """Persist a job and fully own the passed lock until handoff or release completes."""
         from openviking.service.task_tracker import get_task_tracker
@@ -460,6 +465,8 @@ class ResourceService:
         tracker = get_task_tracker()
         try:
             await get_queue_manager().enqueue(queue_name, msg.to_dict())
+            if on_enqueued is not None:
+                on_enqueued()
             if resource_lock is not None:
                 await self._handoff_lock_ref(resource_lock)
                 resource_lock = None
@@ -494,6 +501,7 @@ class ResourceService:
     ) -> Dict[str, Any]:
         """Execute one durable add-resource job inside its QueueFS consumer."""
         if msg.prepared is None:
+            materialized_resource = None
             target_uri = msg.root_uri
             parent_uri = None
             internal_kwargs: Dict[str, Any] = {}
@@ -515,8 +523,25 @@ class ResourceService:
                 from openviking.parse.understanding_api import PREPARED_RESPONSE_ID_ARG
 
                 internal_kwargs[PREPARED_RESPONSE_ID_ARG] = msg.understanding_response_id
+            job_path = msg.path
+            allow_local_path_resolution = False
+            enforce_public_remote_targets = msg.enforce_public_remote_targets
+            if msg.staged_source is not None:
+                from openviking.parse.accessors.staged_resource import (
+                    StagedResource,
+                    materialize_resource,
+                )
+
+                materialized_resource = await materialize_resource(
+                    StagedResource.from_dict(msg.staged_source),
+                    viking_fs=self._viking_fs,
+                    ctx=ctx,
+                )
+                job_path = str(materialized_resource.path)
+                allow_local_path_resolution = True
+                enforce_public_remote_targets = False
             result = await self._execute_resource_ingestion(
-                path=msg.path,
+                path=job_path,
                 ctx=ctx,
                 to=target_uri,
                 parent=parent_uri,
@@ -532,11 +557,12 @@ class ResourceService:
                 manage_watch=not msg.skip_watch_management,
                 tags=msg.tags,
                 tag_mode=msg.tag_mode,
-                allow_local_path_resolution=msg.allow_local_path_resolution,
-                enforce_public_remote_targets=msg.enforce_public_remote_targets,
+                allow_local_path_resolution=allow_local_path_resolution,
+                enforce_public_remote_targets=enforce_public_remote_targets,
                 resource_lock=resource_lock,
                 stage_callback=stage_callback,
                 watch_auth_state=normalized_args.watch_auth_state,
+                prepared_resource=materialized_resource,
                 strict=msg.strict,
                 source_name=msg.source_name,
                 ignore_dirs=msg.ignore_dirs,
@@ -547,6 +573,8 @@ class ResourceService:
                 create_parent=msg.create_parent,
                 **internal_kwargs,
             )
+            if msg.staged_source is not None:
+                result["source_path"] = msg.source_path
             stage_result = stage_callback("processing_queue")
             if inspect.isawaitable(stage_result):
                 await stage_result
@@ -600,7 +628,6 @@ class ResourceService:
         manage_watch: bool = True,
         tags: Optional[List[str]] = None,
         tag_mode: str = "replace",
-        allow_local_path_resolution: bool = True,
         enforce_public_remote_targets: bool = False,
         args: Optional[Dict[str, Any]] = None,
         **kwargs,
@@ -694,7 +721,6 @@ class ResourceService:
                 skip_watch_management=not manage_watch,
                 tags=tags,
                 tag_mode=tag_mode,
-                allow_local_path_resolution=allow_local_path_resolution,
                 enforce_public_remote_targets=enforce_public_remote_targets,
                 strict=bool(kwargs.get("strict", False)),
                 ignore_dirs=kwargs.get("ignore_dirs"),
@@ -761,6 +787,38 @@ class ResourceService:
         return root_uri, resource_lock
 
     @staticmethod
+    def _prepared_source_info(
+        path: str,
+        prepared_resource: "LocalResource",
+        source_name: Optional[str],
+        *,
+        use_path_name: bool = True,
+    ) -> tuple[Optional[str], str, _ResourceSourceInfo]:
+        resolved_extension = str(prepared_resource.meta.get("resolved_extension") or "")
+        resolved_name = (
+            source_name
+            or prepared_resource.meta.get("original_filename")
+            or prepared_resource.meta.get("resolved_name")
+        )
+        if not resolved_name and use_path_name:
+            resolved_name = prepared_resource.path.name
+        if prepared_resource.path.is_dir():
+            source_format = "directory"
+        else:
+            source_format = resolved_extension.lstrip(".") or "file"
+            if resolved_extension.lower().lstrip(".") == MPEG_TS_EXTENSION_ALIAS:
+                source_format = "video"
+        return (
+            str(resolved_name) if resolved_name else None,
+            resolved_extension,
+            _ResourceSourceInfo(
+                source_name=str(resolved_name) if resolved_name else None,
+                source_path=prepared_resource.original_source or path,
+                source_format=source_format,
+            ),
+        )
+
+    @staticmethod
     def _target_doc_name(
         path: str,
         source_name: Optional[str],
@@ -825,7 +883,7 @@ class ResourceService:
         watch_interval: float = 0,
         tags: Optional[List[str]] = None,
         tag_mode: str = "replace",
-        allow_local_path_resolution: bool = True,
+        allow_local_path_resolution: bool = False,
         enforce_public_remote_targets: bool = False,
         add_type: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None,
@@ -877,7 +935,6 @@ class ResourceService:
         summarize: bool = False,
         processing_mode: ProcessingMode = DEFAULT_PROCESSING_MODE,
         watch_interval: float = 0,
-        allow_local_path_resolution: bool = True,
         enforce_public_remote_targets: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -897,7 +954,7 @@ class ResourceService:
             processing_mode=processing_mode,
             watch_interval=watch_interval,
             manage_watch=False,
-            allow_local_path_resolution=allow_local_path_resolution,
+            allow_local_path_resolution=False,
             enforce_public_remote_targets=enforce_public_remote_targets,
             args=None,
             **kwargs,
@@ -923,7 +980,7 @@ class ResourceService:
         tags: Optional[List[str]] = None,
         tag_mode: str = "replace",
         parse_mode: ParseMode | str | None = None,
-        allow_local_path_resolution: bool = True,
+        allow_local_path_resolution: bool = False,
         enforce_public_remote_targets: bool = False,
         args: Optional[Dict[str, Any]] = None,
         **kwargs,
@@ -1074,7 +1131,6 @@ class ResourceService:
                     manage_watch=manage_watch,
                     tags=tags,
                     tag_mode=tag_mode,
-                    allow_local_path_resolution=allow_local_path_resolution,
                     enforce_public_remote_targets=enforce_public_remote_targets,
                     watch_auth_state=watch_auth_state,
                     **request_local_kwargs,
@@ -1097,7 +1153,6 @@ class ResourceService:
                     manage_watch=manage_watch,
                     tags=tags,
                     tag_mode=tag_mode,
-                    allow_local_path_resolution=allow_local_path_resolution,
                     enforce_public_remote_targets=enforce_public_remote_targets,
                     **kwargs,
                 )
@@ -1124,6 +1179,15 @@ class ResourceService:
                 enforce_public_remote_targets=enforce_public_remote_targets,
                 watch_auth_state=normalized_args.watch_auth_state,
                 parser_args=normalized_args.processor_kwargs,
+                defer_ingestion=(
+                    not wait
+                    and manage_watch
+                    and mode is ParseMode.DEFAULT
+                    and (
+                        is_remote_resource_source(path)
+                        or (allow_local_path_resolution and len(path) <= 1024 and "\n" not in path)
+                    )
+                ),
                 **kwargs,
             )
         get_current_telemetry().set("resource.flags.wait", wait)
@@ -1174,12 +1238,14 @@ class ResourceService:
         manage_watch: bool = True,
         tags: Optional[List[str]] = None,
         tag_mode: str = "replace",
-        allow_local_path_resolution: bool = True,
+        allow_local_path_resolution: bool = False,
         enforce_public_remote_targets: bool = False,
         watch_auth_state: Optional[Dict[str, Any]] = None,
         parser_args: Optional[Dict[str, Any]] = None,
         resource_lock: Optional[Dict[str, Any]] = None,
         stage_callback: Optional[Callable[[str], Any]] = None,
+        defer_ingestion: bool = False,
+        prepared_resource: Optional["LocalResource"] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Execute an already-routed resource ingestion."""
@@ -1204,7 +1270,6 @@ class ResourceService:
         telemetry.set("resource.flags.summarize", summarize)
         telemetry.set("resource.flags.watch_enabled", watch_enabled)
 
-        prepared_resource: Optional["LocalResource"] = None
         try:
             target = ContentTargetSpec.from_fields(
                 ctx=ctx,
@@ -1234,11 +1299,17 @@ class ResourceService:
                 and self._resource_processor.should_use_understanding_directly(path, **kwargs)
             )
 
-            if (
-                async_understanding_candidate
-                and not direct_understanding
-                and self._resource_processor.understanding_api_enabled()
-            ):
+            should_prepare_source = bool(
+                not direct_understanding
+                and (
+                    defer_ingestion
+                    or (
+                        async_understanding_candidate
+                        and self._resource_processor.understanding_api_enabled()
+                    )
+                )
+            )
+            if prepared_resource is None and should_prepare_source:
                 prepared_resource = await self._resource_processor.prepare_resource(
                     path,
                     ctx,
@@ -1249,6 +1320,8 @@ class ResourceService:
             if (
                 prepared_resource is not None
                 and self._resource_processor is not None
+                and mode is ParseMode.DEFAULT
+                and defer_post_processing
                 and self._resource_processor.should_use_understanding_api(prepared_resource)
             ):
                 understanding_source = prepared_resource
@@ -1260,21 +1333,17 @@ class ResourceService:
             if understanding_source is not None:
                 from openviking.storage.queuefs.add_resource_msg import AddResourceMsg
 
+                preflight_meta: Dict[str, Any] = {}
                 if prepared_resource is not None:
-                    resolved_extension = str(prepared_resource.meta.get("resolved_extension") or "")
-                    source_name = (
-                        kwargs.get("source_name")
-                        or prepared_resource.meta.get("original_filename")
-                        or prepared_resource.meta.get("resolved_name")
+                    from openviking.parse.accessors.staged_resource import public_resource_meta
+
+                    source_name, resolved_extension, source_info = self._prepared_source_info(
+                        path,
+                        prepared_resource,
+                        kwargs.get("source_name"),
+                        use_path_name=False,
                     )
-                    source_format = resolved_extension.lstrip(".") or "file"
-                    if resolved_extension.lower().lstrip(".") == MPEG_TS_EXTENSION_ALIAS:
-                        source_format = "video"
-                    source_info = _ResourceSourceInfo(
-                        source_name=source_name,
-                        source_path=path,
-                        source_format=source_format,
-                    )
+                    preflight_meta = public_resource_meta(prepared_resource.meta)
                 else:
                     resolved_extension = ""
                     source_name = kwargs.get("source_name")
@@ -1371,7 +1440,6 @@ class ResourceService:
                         directly_upload_media=bool(kwargs.get("directly_upload_media", True)),
                         preserve_structure=kwargs.get("preserve_structure"),
                         create_parent=bool(kwargs.get("create_parent", False)),
-                        allow_local_path_resolution=allow_local_path_resolution,
                         enforce_public_remote_targets=enforce_public_remote_targets,
                         args=processor_args,
                         source_name=source_name,
@@ -1420,10 +1488,139 @@ class ResourceService:
                 response = {
                     "status": "success",
                     "task_id": task.task_id,
+                    "source_path": (source_name or "") if kwargs.get("temp_file_id") else path,
+                    "meta": preflight_meta,
+                    "errors": [],
                 }
                 if not defer_target_resolution:
                     response["root_uri"] = root_uri
                 return response
+
+            if defer_ingestion:
+                if prepared_resource is None:
+                    raise InternalError("Deferred ingestion source was not prepared")
+                from openviking.parse.accessors.staged_resource import (
+                    stage_resource,
+                )
+                from openviking.storage.queuefs.add_resource_msg import AddResourceMsg
+
+                source_name, resolved_extension, source_info = self._prepared_source_info(
+                    path,
+                    prepared_resource,
+                    kwargs.get("source_name"),
+                )
+                if kwargs.get("temp_file_id"):
+                    source_path = source_name or prepared_resource.path.name
+                else:
+                    source_path = prepared_resource.original_source or path
+                staged_source = await stage_resource(
+                    prepared_resource,
+                    viking_fs=self._viking_fs,
+                    ctx=ctx,
+                    original_source=str(source_path),
+                )
+                lock_lease: Optional[Dict[str, Any]] = None
+                source_enqueued = False
+
+                def _transfer_source_ownership() -> None:
+                    nonlocal source_enqueued
+                    source_enqueued = True
+
+                try:
+                    root_uri, lock_lease = await self._plan_resource_target(
+                        path=path,
+                        ctx=ctx,
+                        target=target,
+                        source_name=source_name,
+                        source_info=source_info,
+                    )
+                    queued_args = self._sanitize_watch_processor_kwargs(dict(parser_args or {}))
+                    queued_args["parser_backend"] = "internal"
+                    if resolved_extension:
+                        queued_args["resolved_extension"] = resolved_extension
+                    lock_handoff = await self._lock_to_handoff_payload(lock_lease)
+                    msg = AddResourceMsg(
+                        task_id=str(uuid4()),
+                        telemetry_id=telemetry_id or None,
+                        path=str(source_path),
+                        staged_source=staged_source.to_dict(),
+                        source_path=str(source_path),
+                        root_uri=root_uri,
+                        account_id=ctx.account_id,
+                        user_id=ctx.user.user_id,
+                        role=str(ctx.role),
+                        actor_peer_id=ctx.actor_peer_id,
+                        reason=reason,
+                        instruction=instruction,
+                        timeout=timeout,
+                        build_index=build_index,
+                        summarize=summarize,
+                        processing_mode=processing_mode,
+                        parse_mode=mode.value,
+                        strict=bool(kwargs.get("strict", False)),
+                        ignore_dirs=kwargs.get("ignore_dirs"),
+                        include=kwargs.get("include"),
+                        exclude=kwargs.get("exclude"),
+                        directly_upload_media=bool(kwargs.get("directly_upload_media", True)),
+                        preserve_structure=kwargs.get("preserve_structure"),
+                        create_parent=bool(kwargs.get("create_parent", False)),
+                        enforce_public_remote_targets=False,
+                        args=queued_args,
+                        source_name=source_name,
+                        lock_handoff=lock_handoff,
+                        watch_interval=watch_interval,
+                        skip_watch_management=True,
+                        tags=tags,
+                        tag_mode=tag_mode,
+                    )
+                    enqueue_lock = lock_lease
+                    lock_lease = None
+                    task = await self._enqueue_add_resource_job(
+                        msg,
+                        queue_name=QueueManager.ADD_RESOURCE,
+                        resource_lock=enqueue_lock,
+                        on_enqueued=_transfer_source_ownership,
+                    )
+                    source_enqueued = True
+                finally:
+                    if lock_lease is not None:
+                        await self._release_lock_ref(lock_lease)
+                    if not source_enqueued:
+                        await self._viking_fs.delete_temp(
+                            staged_source.temp_uri,
+                            ctx=ctx,
+                        )
+
+                job_enqueued = True
+                if not target.to:
+                    watch_to_is_directory = not (
+                        mode is ParseMode.NO_SPLIT and not staged_source.is_directory
+                    )
+                await self._manage_watch_if_needed(
+                    watch_manager=watch_manager,
+                    manage_watch=manage_watch,
+                    watch_interval=watch_interval,
+                    target=target,
+                    to_is_directory=watch_to_is_directory,
+                    root_uri=root_uri,
+                    path=path,
+                    reason=reason,
+                    instruction=instruction,
+                    build_index=build_index,
+                    summarize=summarize,
+                    processing_mode=processing_mode,
+                    processor_kwargs=self._watch_processor_kwargs(kwargs, tags, tag_mode),
+                    watch_auth_state=watch_auth_state,
+                    ctx=ctx,
+                )
+                return {
+                    "status": "success",
+                    "root_uri": root_uri,
+                    "source_path": str(source_path),
+                    "meta": staged_source.meta,
+                    "errors": [],
+                    "task_id": task.task_id,
+                }
 
             result = await self._resource_processor.process_resource(
                 path=path,
@@ -1491,7 +1688,6 @@ class ResourceService:
                     directly_upload_media=bool(kwargs.get("directly_upload_media", True)),
                     preserve_structure=kwargs.get("preserve_structure"),
                     create_parent=bool(kwargs.get("create_parent", False)),
-                    allow_local_path_resolution=allow_local_path_resolution,
                     enforce_public_remote_targets=enforce_public_remote_targets,
                     source_name=kwargs.get("source_name"),
                     skip_watch_management=True,
@@ -1750,7 +1946,7 @@ class ResourceService:
         ctx: RequestContext,
         wait: bool = False,
         timeout: Optional[float] = None,
-        allow_local_path_resolution: bool = True,
+        allow_local_path_resolution: bool = False,
         source_path_hint: Optional[str] = None,
         apply_privacy: bool = True,
         privacy_change_reason: str = "auto-extracted from add_skill",

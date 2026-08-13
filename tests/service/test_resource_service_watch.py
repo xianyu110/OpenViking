@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0
 """Integration tests for ResourceService watch functionality."""
 
+from functools import partial
 from types import SimpleNamespace
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
@@ -84,7 +85,10 @@ class NoopTaskTracker:
         pass
 
     async def wait(self, *_args, **_kwargs):
-        return SimpleNamespace(status=TaskStatus.COMPLETED, result={})
+        return SimpleNamespace(
+            status=TaskStatus.COMPLETED,
+            result={"root_uri": "viking://resources/test"},
+        )
 
     def count(self):
         return self._count
@@ -128,6 +132,11 @@ async def resource_service(watch_manager: WatchManager) -> AsyncGenerator[Resour
         watch_scheduler=scheduler,
     )
     service._enqueue_add_resource_job = AsyncMock(return_value=SimpleNamespace(task_id="test-task"))
+    service.add_resource = partial(
+        service.add_resource,
+        wait=True,
+        allow_local_path_resolution=True,
+    )
     yield service
 
 
@@ -909,6 +918,8 @@ class TestResourceProcessingIndependence:
             ctx=request_context,
             to="viking://resources/test",
             watch_interval=30.0,
+            wait=True,
+            allow_local_path_resolution=True,
         )
 
         assert result is not None
@@ -933,6 +944,8 @@ class TestResourceProcessingIndependence:
             ctx=request_context,
             to="viking://resources/test",
             watch_interval=30.0,
+            wait=True,
+            allow_local_path_resolution=True,
         )
 
         assert result is not None

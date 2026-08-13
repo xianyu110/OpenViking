@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from openviking.parse.accessors.base import LocalResource, SourceType
+from openviking.parse.accessors.staged_resource import StagedResource
 from openviking.parse.understanding_api import PREPARED_RESPONSE_ID_ARG, UnderstandingAPI
 from openviking.server.identity import RequestContext, Role
 from openviking.service.resource_service import ResourceService
@@ -471,7 +472,13 @@ async def test_uat_producer_payload_reaches_worker_without_persisting_token(monk
         args={"feishu_access_token": "u-secret", "custom_option": "forwarded"},
     )
 
-    assert initial_result == {"status": "success", "task_id": "task-1"}
+    assert initial_result == {
+        "status": "success",
+        "task_id": "task-1",
+        "source_path": source,
+        "meta": {},
+        "errors": [],
+    }
     assert task_tracker.create.await_args.kwargs["resource_id"] is None
     submit_understanding.assert_awaited_once_with(
         source,
@@ -508,27 +515,46 @@ async def test_uat_producer_payload_reaches_worker_without_persisting_token(monk
 
 
 @pytest.mark.asyncio
-async def test_local_prepared_job_uses_add_resource_queue(monkeypatch):
+async def test_local_wait_false_queues_staged_source_before_parsing(monkeypatch, tmp_path):
     root_uri = "viking://resources/script"
     resource_lock = {"lease_ref": "lock-1"}
+    source_path = tmp_path / "script.md"
+    source_path.write_text("# script\n")
+    prepared = LocalResource(
+        path=source_path,
+        source_type=SourceType.LOCAL,
+        original_source=str(source_path),
+        meta={"resolved_extension": ".md", "resolved_name": "script.md"},
+        is_temporary=False,
+    )
+    staged_source = {
+        "temp_uri": "viking://temp/user/job-1",
+        "source_uri": "viking://temp/user/job-1/source/script.md",
+        "source_name": "script.md",
+        "source_type": SourceType.LOCAL,
+        "original_source": str(source_path),
+        "is_directory": False,
+        "meta": {"resolved_extension": ".md", "resolved_name": "script.md"},
+    }
     agfs = SimpleNamespace(
+        pathlock_acquire_tree=AsyncMock(return_value=resource_lock),
         pathlock_to_handoff=AsyncMock(return_value={"handle_id": "lock-1"}),
         pathlock_handoff=AsyncMock(),
         pathlock_release=AsyncMock(),
     )
     resource_processor = SimpleNamespace(
-        process_resource=AsyncMock(
-            return_value={
-                "status": "success",
-                "root_uri": root_uri,
-                "_post_process": {"root_uri": root_uri},
-                "_resource_lock": resource_lock,
-            }
-        )
+        prepare_resource=AsyncMock(return_value=prepared),
+        should_use_understanding_api=Mock(return_value=False),
+        process_resource=AsyncMock(),
+        tree_builder=SimpleNamespace(resolve_target_uri=AsyncMock(return_value=(root_uri, None))),
     )
 
     service = ResourceService(
-        viking_fs=SimpleNamespace(_async_agfs=agfs),
+        viking_fs=SimpleNamespace(
+            _async_agfs=agfs,
+            _uri_to_path=Mock(return_value="/resources/script"),
+            delete_temp=AsyncMock(),
+        ),
         resource_processor=resource_processor,
         skill_processor=SimpleNamespace(),
     )
@@ -542,23 +568,39 @@ async def test_local_prepared_job_uses_add_resource_queue(monkeypatch):
         "openviking.service.resource_service.is_git_repo_url",
         Mock(return_value=False),
     )
+    stage_resource = AsyncMock(return_value=StagedResource(**staged_source))
+    monkeypatch.setattr(
+        "openviking.parse.accessors.staged_resource.stage_resource",
+        stage_resource,
+    )
     ctx = RequestContext(
         user=UserIdentifier("account-1", "user-1"),
         role=Role.USER,
     )
 
     result = await service.add_resource(
-        path="/tmp/script.md",
+        path=str(source_path),
         ctx=ctx,
         to=root_uri,
         wait=False,
+        allow_local_path_resolution=True,
     )
 
-    assert result["task_id"] == "task-1"
+    assert result == {
+        "status": "success",
+        "root_uri": root_uri,
+        "source_path": str(source_path),
+        "meta": staged_source["meta"],
+        "errors": [],
+        "task_id": "task-1",
+    }
     call = service._enqueue_add_resource_job.await_args
     assert call.kwargs["queue_name"] == QueueManager.ADD_RESOURCE
-    assert call.args[0].prepared == {"root_uri": root_uri}
+    assert call.args[0].prepared is None
+    assert call.args[0].staged_source == staged_source
+    assert call.args[0].args["parser_backend"] == "internal"
     assert call.args[0].lock_handoff == {"handle_id": "lock-1"}
+    resource_processor.process_resource.assert_not_awaited()
     agfs.pathlock_to_handoff.assert_awaited_once_with(resource_lock)
 
 

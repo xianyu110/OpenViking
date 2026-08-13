@@ -28,21 +28,24 @@ ResourceService._submit_resource_ingestion    阶段一：对新请求选择执�
         |
         +-- Git && wait=false ----------------> 预检 + AddResource 队列 --> 返回 task_id
         |
-        +-- HTTP 服务远程资源 && wait=false && Understanding 已启用
+        +-- 标准资源 && wait=false && 默认 parse mode
         |       |
-        |       +-- 原始 URL 可直达 -----------> 提交 Understanding --> ExternalParse 队列
+        |       +-- 原始 URL 可直达 Understanding
+        |       |                                提交 Understanding --> ExternalParse 队列
         |       |                                                        |
         |       |                                                        +--> 返回 task_id --> Worker
         |       |
-        |       +-- 需要先确定本地类型 --------> Accessor 下载并识别
+        |       +-- Accessor 获取并识别来源 ----> LocalResource
         |               |
         |               +-- 命中 Understanding --> 上传同一文件 --> ExternalParse 队列
         |               |                                             |
         |               |                                             +--> 返回 task_id --> Worker
         |               |
-        |               +-- 未命中 ------------> 复用 LocalResource，进入当前请求标准链
+        |               +-- 命中内置 Parser ----> 固化 VikingFS 快照 --> AddResource 队列
+        |                                                             |
+        |                                                             +--> 返回 task_id --> Worker
         |
-        +-- 其余场景（包括所有 wait=true） -----> _execute_resource_ingestion
+        +-- 其余场景（包括 wait=true） ----------> _execute_resource_ingestion
 
 _execute_resource_ingestion                    阶段二：执行标准链
         |
@@ -78,11 +81,12 @@ UnifiedResourceProcessor
         |
         +-- wait=true  --> 继续等待摘要 / 语义队列 / 向量索引后返回
         |
-        +-- wait=false --> 普通标准链落盘后进入 AddResource 队列并返回
+        +-- wait=false --> 仅兼容需同步确定布局的路径；默认模式已在解析前持久化入队
 
 后台队列 Worker
         |
-        +-- source job -----------------------> _execute_resource_ingestion(wait=true)
+        +-- source job -----------------------> 恢复 VikingFS 来源快照
+        |                                      _execute_resource_ingestion(wait=true)
         |                                      使用消息中冻结的 backend / response_id / extension
         |
         +-- prepared job ---------------------> finish_prepared_resource
@@ -107,7 +111,7 @@ Understanding 不受 `wait=false` 限制。`wait=true` 在当前请求内完成 
 | Understanding 能否直接接收原始 URL | `ParserRouter.should_use_understanding_directly` | 直达 Understanding 或继续 Accessor |
 | Understanding 与内置 Parser | `ParserRouter.parse` | `ParseResult` |
 
-后台资源任务统一使用可恢复的 `AddResourceMsg`，但按工作类型进入两个独立队列：Understanding 使用受外部解析并发限制的 `ExternalParse`；Git 和已落盘的本地后处理使用 `AddResource`。两个队列都由 `AddResourceProcessor` 消费，锁接管失败时仍回到原队列。消息已经冻结了生产端做出的选择，例如 `parser_backend`、`understanding_response_id` 和 `resolved_extension`。Worker 直接执行该选择，不再把任务送回公开 `add_resource` 重新分类。
+后台资源任务统一使用可恢复的 `AddResourceMsg`，但按工作类型进入两个独立队列：Understanding 使用受外部解析并发限制的 `ExternalParse`；Git、标准来源快照和已落盘的本地后处理使用 `AddResource`。两个队列都由 `AddResourceProcessor` 消费，锁接管失败时仍回到原队列。消息冻结生产端做出的选择以及标准来源快照引用，例如 `parser_backend`、`understanding_response_id`、`resolved_extension` 和 `staged_source`。Worker 直接执行该选择，不再把任务送回公开 `add_resource` 重新分类。
 
 ## 顶层路由表
 
@@ -118,9 +122,10 @@ Understanding 不受 `wait=false` 限制。`wait=true` 在当前请求内完成 
 | Git 未命中 Connector 或无凭证回退，`wait=false` | GitAccessor 在后台 clone | 内置目录/代码仓库 Parser | 是 | 预检仓库并预占 URI 后返回 |
 | Git，`wait=true` | GitAccessor | 内置目录/代码仓库 Parser | 是 | 解析、落盘及语义队列完成后返回 |
 | 飞书 URL，`parser_api.enable_feishu_url=true` 且有 user/app 凭证 | Understanding 直接读取飞书 | Understanding | 是 | `wait=false` 时提交并入队；`wait=true` 时同步解析 |
-| 飞书 URL，直达配置关闭或无可用凭证 | FeishuAccessor | 内置 Markdown Parser | 是 | Accessor 拉取、归一化后走标准链 |
+| 飞书 URL，直达配置关闭或无可用凭证 | FeishuAccessor | 内置 Markdown Parser | 是 | `wait=false` 时拉取并固化包含图片的快照后返回；`wait=true` 时同步解析 |
 | HTTP 服务请求，`wait=false`，命中 Understanding | HTTPAccessor 识别类型并上传同一份本地文件 | Understanding | 是 | 类型识别、Understanding 提交、URI 预占和入队后返回 |
-| 其他 URL、文件、目录、原始文本 | 对应 Accessor；原始文本无需 Accessor | 内置 Parser 或同步 Understanding | 是 | 至少完成解析和落盘后返回 |
+| 其他 URL、文件、目录（默认 parse mode） | 对应 Accessor | 内置 Parser | 是 | `wait=false` 时获取来源、固化快照、预占 URI 并持久化入队后返回 |
+| `wait=true`、原始文本或需要同步确定产物布局的模式 | 对应 Accessor；原始文本无需 Accessor | 内置 Parser 或同步 Understanding | 是 | 解析、落盘及所需队列完成后返回 |
 
 Git 是 Connector 与标准链共享的来源：未命中 Connector 或参数不受支持时可回退到标准链；一旦请求带有 Connector 专用凭证则禁止回退，避免凭证进入持久化队列。`tos://` 没有标准 Accessor，不能回退，否则只会在更深处得到误导性的解析错误。
 
@@ -194,7 +199,9 @@ HTTPAccessor 按以下顺序收集和修正类型：
 
 最终扩展名写入 `LocalResource.meta.extension`，然后冻结为 `resolved_extension`。`ParserRouter` 只读取这个结果。URL 上已有明确扩展名时，不用 magic bytes 擅自覆盖它。
 
-因此，`wait=false` 不等于“完全不碰源站就返回”。HTTP 服务收到无后缀远程 URL、且 Understanding 已启用时，必须先下载或探测一次，才能知道应进入外部解析队列还是内置 Parser。命中 Understanding 后，生产端直接上传这份已检测的本地文件并取得 `response_id`，然后才清理临时文件；Worker 只恢复该 response，不会重新下载可能已过期或内容已变化的 URL。
+因此，`wait=false` 不等于“完全不碰源站就返回”。来源必须先经过 Accessor，确认能获取并冻结格式。命中 Understanding 时，生产端上传同一份已检测文件并持久化 `response_id`；命中内置 Parser 时，生产端把 `LocalResource`（包括飞书文档引用的伴随图片）复制到当前用户的 `viking://temp` 快照，并持久化 `staged_source`。只有持久化任务接管快照后请求才返回；Worker 不会重新下载可能已过期或内容已变化的 URL。
+
+来源快照属于对应 `add_resource` 任务：任务完成、失败或取消后删除；队列重试和进程关闭期间保留，以便恢复。请求凭据和 Accessor 私有元数据不会进入快照描述或队列参数。
 
 ## Parser：只回答“本地内容怎么解析”
 
@@ -270,15 +277,16 @@ Connector 当前要求提供精确 `to`，不接受 `parent`；也不支持 `wai
 | Git | 预检并预占 URI 后启动后台标准链 | 当前请求内完成标准链并等待队列 |
 | 飞书直达 Understanding | 生产端提交后只将 response ID 放入 `ExternalParse`；无显式资源名时可延迟返回 `root_uri` | 当前请求内调用 Understanding，再等待后续队列 |
 | HTTP 服务 + 异步 Understanding | 先识别类型，再预占 URI、入 `ExternalParse` 后返回 | 当前请求内调用 Understanding，再等待后续队列 |
-| 普通标准链 | 解析和落盘完成后返回；摘要/语义处理由任务监控 | 解析和落盘完成后继续等待语义队列 |
+| 普通标准链（默认 parse mode） | Accessor 获取来源、固化快照、预占 URI 并持久化入队后返回 | 解析和落盘完成后继续等待语义队列 |
+| 原始文本或需同步确定布局的 parse mode | 当前请求内完成解析、落盘，再返回队列任务 | 解析和落盘完成后继续等待语义队列 |
 
-所以普通 `wait=false` 不是“所有工作后台化”，而是“资源树已落盘，但不阻塞等待后续语义任务”。Git 与异步 Understanding 是两个明确的例外分支。
+所以默认标准来源的 `wait=false` 以“来源已经获取并形成可恢复快照、目标已经预占、任务已经持久化”为成功边界，而不是以资源树已经落盘为边界。`wait=true` 的完成语义保持不变。
 
 ## 目标 URI、锁和失败边界
 
-- 需要后台执行的 Git 与普通文件 Understanding 任务会先规划并预占目标 URI，避免返回的 URI 随后台竞态变化。未指定名称的飞书直达任务会延迟目标 URI 解析，以 artifact 的真实根标题作为最终名称，并在完成时回写 TaskRecord。
+- 需要后台执行的 Git、标准来源快照与普通文件 Understanding 任务会先规划并预占目标 URI，避免返回的 URI 随后台竞态变化。未指定名称的飞书直达任务会延迟目标 URI 解析，以 artifact 的真实根标题作为最终名称，并在完成时回写 TaskRecord。
 - 锁通过 handoff 交给后台任务或队列 Worker；入队失败时立即释放，并把任务标为失败。
-- 临时 `LocalResource` 由拥有它的调用层清理；交给标准处理器后，清理责任随之转移。
+- 请求内临时 `LocalResource` 在来源快照持久化后清理；快照由后台任务独占，在完成、失败或取消时清理，重试和服务关闭时保留。
 - Parser 产生 `ParseResult` 后才进入 TreeBuilder。没有临时解析产物时标准链返回解析错误；目录允许带 warnings 的部分成功，`strict` 决定是否暴露这些警告。
 - Connector 的失败边界在外部任务终态，OpenViking 不对其内部文件逐个回滚。
 

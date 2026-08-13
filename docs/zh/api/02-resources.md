@@ -93,11 +93,12 @@ URL/文件  Parser  TreeBuilder  AGFS    Summarizer/Vector
 - **向量索引**：将内容向量化用于语义搜索
 - 通过 `SemanticQueue` 异步处理，可通过 `wait=True` 等待完成
 
-#### 非等待 Git 仓库导入
-- 对 Git 仓库来源使用 `wait=false` 时，OpenViking 会先校验仓库、解析目标 URI、预占最终 `root_uri`，然后在 clone/parse/finalize 完成前返回。
-- 立即响应包含 `status`、`root_uri` 和 `task_id`；抓取、解析、finalize 以及队列等待会在持久化后台任务中继续执行。
-- 可通过 `GET /api/v1/tasks/{task_id}` 查询任务状态。Git 资源导入任务的阶段包括 `queued`、`fetching`、`parsing`、`finalizing`、`processing_queue`。
-- 其他资源来源使用 `wait=false` 时，会在响应前完成抓取/解析/finalize；返回的 `task_id` 只用于跟踪 semantic 和 embedding 队列完成情况。
+#### 非等待资源导入
+- 标准资源来源使用 `wait=false` 时，OpenViking 只在请求内完成来源校验与获取、格式识别、持久化快照、目标 URI 规划和任务入队；Parser、TreeBuilder 落盘、semantic 与 embedding 均由后台任务继续执行。
+- 本地上传会先校验 `temp_file_id` 并固化文件；网页、sitemap/RSS 和走内置 Parser 的飞书来源会先下载为本地快照。因此返回成功后，后台任务不再依赖一次性上传或原始远程内容仍然可用。
+- Git 仓库仍先完成仓库 preflight 和目标预占；直达 Understanding 的来源会先取得可恢复的 `response_id`。Connector 导入保持其独立的提交与状态轮询链路。
+- 立即响应包含 `status`、`root_uri`、`source_path`、预检 `meta`、`errors` 和 `task_id`，不包含尚未由 Parser 生成的 `temp_uri`。
+- 可通过 `GET /api/v1/tasks/{task_id}` 查询完整导入状态，阶段包括 `queued`、`fetching`、`parsing`、`finalizing`、`processing_queue`。
 
 ### 资源的增量更新
 
@@ -184,12 +185,12 @@ URL/文件  Parser  TreeBuilder  AGFS    Summarizer/Vector
 - `user_id` 和 `peer_id` 路径片段必须是安全的单段标识，例如 `alice` 或 `web-visitor-alice`。包含路径分隔符、`.`、`..`、`:` 或 `+` 的值会被拒绝。
 - `path` 和 `temp_file_id` 不能同时指定，上传本地文件需要先通过 [temp_upload](#temp_upload) 上传获取 `temp_file_id`，在 SDK 和 CLI 中已经封装好。
 - `tags` 会在资源解析后、向量记录写入时同步写入底层向量库。`add_resource(tags=...)` 不返回 `tags_result`；需要验证时，可在 `/api/v1/search/find` 或 `/api/v1/search/search` 中传相同 `tags` 过滤召回。
-- 只有 Git 仓库来源在 `wait=false` 时使用完整后台导入；OpenViking 会先完成仓库 preflight 和目标规划，再返回 `task_id`。
+- 标准来源在 `wait=false` 且使用默认 parse mode 时会在来源获取、快照固化、目标规划和持久化入队后返回；后台任务负责完整的解析、落盘和 semantic/embedding 处理。Git 使用仓库 preflight 代替下载快照。
 - 原生 HTTPS Git 的 `args.auth_config` 在 `watch_interval <= 0` 时只用于本次请求；当 `watch_interval > 0` 时，OpenViking 会把与仓库 URL 绑定的 username/token 保存到 Watch 私有鉴权状态，并只在后续 Git 拉取时恢复使用。凭据不会进入普通持久队列，也不会出现在 Watch API/MCP/CLI 返回中。Git PAT 没有通用刷新流程，过期或撤销后需要重建 Watch 来更换 token。为兼容已有用法，系统仍接受 `https://user:token@host/repo.git` 形式的 URL 内嵌凭据并原样传递；由于该 URL 同时也是资源来源标识，它可能被记录到进程参数、日志、队列、资源元数据和 Watch 状态中。新接入建议使用 `args.auth_config`。`args.auth_config` 的明文 HTTP 鉴权和带鉴权重定向仍会被拒绝。
 - token 会放在 HTTPS 请求体中传输。生产环境应保持诊断请求体 dump 关闭；显式启用该功能可能记录秘密。
 - `reason` 触发的记忆生成复用 `session.commit` 的抽取链路，只使用 `reason`、资源 URI、可用的资源名称和目录摘要，不会读取或展开完整资源正文；系统会写入 `entities`、`events`、`preferences` 等已有记忆类型，不创建独立的资源记忆目录。
 - 删除资源时，系统会在删除前扫描本次上下文对应的 self 或 peer 记忆中的 `resource_refs`，清理对应资源 URI 和由该 `reason` 引入的内容，并重新刷新相关记忆的语义索引。
-- 其他来源在 `wait=false` 时会在响应前完成来源解析、目标解析和 AGFS 写入，仅 semantic 与 embedding 队列继续异步处理。
+- `args.parse_mode=no_split` 的自动目标可能取决于 Parser 的最终产物布局，因此仍会在返回前完成解析和目标确定，以保持已有 URI 语义。
 - `processing_mode=vectors_only` 不调用 VLM 语义理解阶段，也不会生成或刷新 `.abstract.md` / `.overview.md`。对已存在目标，它会保留旧的语义产物和旧的语义向量；仍会更新资源树，在 `build_index=true` 时向量化当前非隐藏文件，并清理由本次刷新删除的文件 detail 向量。
 - `processing_mode` 只属于 `add_resource`。管理员维护已有数据时，`reindex` API/CLI 仍使用 `mode`（`vectors_only`、`semantic_and_vectors`、`prune_orphans`）。
 - `watch_interval > 0` 时，如果指定了 `to`，监控任务绑定该目标；如果未指定 `to`，监控任务绑定本次导入返回的 `root_uri`。如果无法得到稳定 `root_uri`，请求会报错并要求显式传 `to`。
@@ -527,7 +528,7 @@ ov add-resource ./documents/guide.md -p viking://resources/docs/{calendar:today}
 }
 ```
 
-**HTTP API 响应 (JSON, 非 Git `wait=false`)**
+**HTTP API 响应 (JSON, 标准来源 `wait=false`)**
 
 ```json
 {
@@ -535,16 +536,17 @@ ov add-resource ./documents/guide.md -p viking://resources/docs/{calendar:today}
   "result": {
     "status": "success",
     "root_uri": "viking://resources/guide",
-    "temp_uri": "viking://temp/username/04291108_b62dc7/guide",
     "source_path": "./documents/guide.md",
-    "meta": {},
+    "meta": {
+      "resolved_extension": ".md"
+    },
     "errors": [],
     "task_id": "uuid-xxx"
   }
 }
 ```
 
-使用返回的 `task_id` 轮询 `/api/v1/tasks/{task_id}` 可查看队列完成情况。对于 `wait=false` 的 Git 仓库来源，同一个端点会跟踪完整后台导入，任务完成后的 `result` 会包含完整导入结果，包括 `queue_status`。
+使用返回的 `task_id` 轮询 `/api/v1/tasks/{task_id}` 可查看完整后台导入；任务完成后的 `result` 包含最终导入结果及 `queue_status`。
 
 **CLI 响应 (默认表格格式)**
 
@@ -572,16 +574,16 @@ task_id      uuid-xxx
 |------|------|------|
 | `status` | string | 处理状态："success" 成功，"error" 失败 |
 | `root_uri` | string | 资源在 OpenViking 中的最终 URI |
-| `task_id` | string | （可选，仅当 `wait=false` 时）可轮询 `/api/v1/tasks/{task_id}` 的任务 ID。非 Git 导入用于队列跟踪；Git 仓库导入用于完整后台导入跟踪。 |
-| `temp_uri` | string | 导入过程中生成的临时 URI |
+| `task_id` | string | （可选，仅当 `wait=false` 时）可轮询 `/api/v1/tasks/{task_id}` 的完整后台导入任务 ID。 |
+| `temp_uri` | string | Parser 在导入过程中生成的临时 URI；`wait=false` 的立即响应不返回该字段 |
 | `source_path` | string | 原始源文件路径或 URL |
-| `meta` | object | 资源解析过程中的元数据（如文件类型、大小等） |
+| `meta` | object | `wait=false` 时为来源获取与格式识别产生的预检元数据；任务完成后为最终解析元数据 |
 | `errors` | array | 处理过程中的错误列表 |
 | `warnings` | array | （可选）处理过程中的警告列表（仅在 `strict=False` 时可能出现） |
-| `queue_status` | object | （可选，仅当 `wait=true` 时）队列处理状态，包含 `pending`、`processing`、`completed` 计数 |
+| `queue_status` | object | （可选）`wait=true` 的完成响应或后台任务完成结果中的队列处理汇总 |
 | `memory_linking` | object | （可选，仅当 `reason` 触发记忆生成时）本次资源 URI 与用户记忆的关联结果 |
 
-对于 `wait=false` 的 Git 仓库来源，后台任务的 `task_type="add_resource"`，`resource_id` 等于返回的 `root_uri`。运行中的任务记录可能包含 `stage`；完成后的任务 `result` 会包含带有 semantic 和 embedding 汇总的 `queue_status`。
+`wait=false` 后台任务的 `task_type="add_resource"`，`resource_id` 等于返回的 `root_uri`。运行中的任务记录可能包含 `stage`；完成后的任务 `result` 会包含带有 semantic 和 embedding 汇总的 `queue_status`。
 
 ---
 

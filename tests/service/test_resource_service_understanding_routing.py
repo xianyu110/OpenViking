@@ -101,6 +101,12 @@ async def test_extensionless_remote_url_queues_frozen_understanding_route(
     assert result == {
         "status": "success",
         "root_uri": "viking://resources/manual",
+        "source_path": "https://example.com/download?id=1",
+        "meta": {
+            "resolved_extension": ".pdf",
+            "original_filename": "manual.pdf",
+        },
+        "errors": [],
         "task_id": "task-1",
     }
     _, message = queue_manager.enqueue.await_args.args
@@ -159,9 +165,7 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
         should_use_understanding_api=lambda resource: resource is prepared,
         submit_understanding=AsyncMock(return_value="response-1"),
         tree_builder=SimpleNamespace(resolve_target_uri=resolve_target_uri),
-        reserve_unique_candidate=AsyncMock(
-            return_value=("viking://resources/video/sample", lock)
-        ),
+        reserve_unique_candidate=AsyncMock(return_value=("viking://resources/video/sample", lock)),
         process_resource=AsyncMock(),
     )
     service = ResourceService(
@@ -170,7 +174,7 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
         resource_processor=processor,
         skill_processor=object(),
     )
-    service._should_use_connector = lambda *_args, **_kwargs: False
+    service._connector_delegate = SimpleNamespace(should_delegate=lambda *_args, **_kwargs: False)
     tracker = SimpleNamespace(
         create=AsyncMock(return_value=SimpleNamespace(task_id="task-1")),
         update_stage=AsyncMock(),
@@ -197,6 +201,12 @@ async def test_remote_mpeg_ts_url_queues_understanding_after_prepare(
     assert result == {
         "status": "success",
         "root_uri": "viking://resources/video/sample",
+        "source_path": "https://example.com/video/sample.ts?sign=1",
+        "meta": {
+            "resolved_extension": "mpegts",
+            "original_filename": "sample.ts",
+        },
+        "errors": [],
         "task_id": "task-1",
     }
     processor.prepare_resource.assert_awaited_once()

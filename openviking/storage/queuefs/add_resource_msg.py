@@ -19,6 +19,7 @@ class AddResourceMsg:
     source_path: str = ""
     telemetry_id: Optional[str] = None
     prepared: Optional[Dict[str, Any]] = None
+    staged_source: Optional[Dict[str, Any]] = None
     lock_handoff: Optional[Dict[str, Any]] = None
     actor_peer_id: Optional[str] = None
     reason: str = ""
@@ -33,7 +34,6 @@ class AddResourceMsg:
     directly_upload_media: bool = True
     preserve_structure: Optional[bool] = None
     create_parent: bool = False
-    allow_local_path_resolution: bool = True
     enforce_public_remote_targets: bool = False
     args: Dict[str, Any] = field(default_factory=dict)
     lock_handoff_retry: int = 0
@@ -61,6 +61,13 @@ class AddResourceMsg:
         path = data.get("path")
         root_uri = data.get("root_uri")
         prepared = data.get("prepared") if isinstance(data.get("prepared"), dict) else None
+        staged_source = None
+        if data.get("staged_source") is not None:
+            from openviking.parse.accessors.staged_resource import StagedResource
+
+            staged_source = StagedResource.from_dict(data["staged_source"]).to_dict()
+        if prepared is not None and staged_source is not None:
+            raise ValueError("prepared and staged_source are mutually exclusive")
         args = dict(data.get("args", {})) if isinstance(data.get("args"), dict) else {}
         legacy_retry = args.pop("_lock_handoff_retry", 0)
         try:
@@ -69,12 +76,12 @@ class AddResourceMsg:
             lock_handoff_retry = 0
         if prepared is not None:
             args.clear()
-        if not task_id or (not path and not prepared) or not root_uri:
+        if not task_id or (not path and not prepared and not staged_source) or not root_uri:
             missing = []
             if not task_id:
                 missing.append("task_id")
-            if not path and not prepared:
-                missing.append("path or prepared")
+            if not path and not prepared and not staged_source:
+                missing.append("path, prepared, or staged_source")
             if not root_uri:
                 missing.append("root_uri")
             raise ValueError(f"Missing required fields: {missing}")
@@ -110,12 +117,12 @@ class AddResourceMsg:
                 else None
             ),
             create_parent=bool(data.get("create_parent", False)),
-            allow_local_path_resolution=bool(data.get("allow_local_path_resolution", True)),
             enforce_public_remote_targets=bool(data.get("enforce_public_remote_targets", False)),
             args=args,
             lock_handoff_retry=lock_handoff_retry,
             source_name=data.get("source_name"),
             prepared=prepared,
+            staged_source=staged_source,
             watch_interval=float(data.get("watch_interval", 0) or 0),
             skip_watch_management=bool(data.get("skip_watch_management", True)),
             defer_target_resolution=bool(data.get("defer_target_resolution", False)),
@@ -126,10 +133,6 @@ class AddResourceMsg:
             ),
             processing_mode=data.get("processing_mode", DEFAULT_PROCESSING_MODE),
             parse_mode=str(data.get("parse_mode") or "default"),
-            tags=(
-                list(data["tags"])
-                if isinstance(data.get("tags"), list)
-                else None
-            ),
+            tags=(list(data["tags"]) if isinstance(data.get("tags"), list) else None),
             tag_mode=str(data.get("tag_mode") or "replace"),
         )
