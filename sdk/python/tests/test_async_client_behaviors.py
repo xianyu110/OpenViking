@@ -205,6 +205,23 @@ async def test_async_http_client_reindex_posts_content_reindex():
 
 
 @pytest.mark.asyncio
+async def test_async_http_client_reindex_sends_explicit_empty_tags():
+    client = AsyncHTTPClient(url="http://localhost:1933")
+    fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))
+    client._http = fake_http
+    client._handle_response = lambda _response: {"status": "completed"}
+
+    await client.reindex(
+        "viking://resources/demo",
+        tags=[],
+        tag_mode="replace",
+    )
+
+    assert fake_http.post.await_args.kwargs["json"]["tags"] == []
+    assert fake_http.post.await_args.kwargs["json"]["tag_mode"] == "replace"
+
+
+@pytest.mark.asyncio
 async def test_async_http_client_write_forwards_processing_mode():
     client = AsyncHTTPClient(url="http://localhost:1933")
     fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))

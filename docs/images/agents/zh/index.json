@@ -100,7 +100,7 @@
       "id": "deerflow",
       "name": "DeerFlow",
       "tags": ["MemoryManager", "MCP"],
-      "logo": "https://raw.githubusercontent.com/bytedance/deer-flow/main/frontend/public/images/deer.svg",
+      "logo": "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_sth/ljhwZthlaukjlkulzlp/agent_logo/deer.png",
       "summary": "DeerFlow 支持通过 MemoryManager 和 MCP 接入，实现记忆的自动写入、召回、注入及管理。建议同时启用两种方式，以获得完整的记忆体验。",
       "detailPath": "https://docs.openviking.net/agents/zh/deerflow-memory-manager.md",
       "tabs": [

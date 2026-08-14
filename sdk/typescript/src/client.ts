@@ -537,15 +537,23 @@ export class OpenVikingClient {
   /** Rebuild indexes for a URI. */
   reindex(
     uri: string,
-    options: { mode?: string; wait?: boolean; dryRun?: boolean } = {},
+    options: {
+      mode?: string;
+      wait?: boolean;
+      dryRun?: boolean;
+      tags?: string[];
+      tagMode?: "replace" | "append";
+    } = {},
   ): Promise<JsonObject> {
     return this.request("POST", "/api/v1/content/reindex", {
-      body: {
+      body: compact({
         uri: normalizeURI(uri),
         mode: options.mode ?? "vectors_only",
         wait: options.wait ?? true,
         dry_run: options.dryRun ?? false,
-      },
+        tags: options.tags,
+        tag_mode: options.tags === undefined ? undefined : options.tagMode ?? "replace",
+      }),
     });
   }
 

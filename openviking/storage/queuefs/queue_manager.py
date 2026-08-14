@@ -21,6 +21,8 @@ from .semantic_queue import SemanticQueue
 
 logger = get_logger(__name__)
 
+DEFAULT_MAX_CONCURRENT_SESSION_COMMIT = 8
+
 # ========== Singleton Pattern ==========
 _instance: Optional["QueueManager"] = None
 
@@ -33,7 +35,7 @@ def init_queue_manager(
     max_concurrent_semantic: int = 32,
     max_concurrent_external_parse: int = 4,
     max_concurrent_add_resource: int = 4,
-    max_concurrent_session_commit: int = 4,
+    max_concurrent_session_commit: int = DEFAULT_MAX_CONCURRENT_SESSION_COMMIT,
 ) -> "QueueManager":
     """Initialize QueueManager singleton.
 
@@ -94,7 +96,7 @@ class QueueManager:
         max_concurrent_semantic: int = 32,
         max_concurrent_external_parse: int = 4,
         max_concurrent_add_resource: int = 4,
-        max_concurrent_session_commit: int = 4,
+        max_concurrent_session_commit: int = DEFAULT_MAX_CONCURRENT_SESSION_COMMIT,
     ):
         """Initialize QueueManager."""
         self._agfs = agfs

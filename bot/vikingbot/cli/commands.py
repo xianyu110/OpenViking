@@ -857,7 +857,7 @@ def chat(
     # Use unified default session ID
     if session_id is None:
         session_id = get_or_create_machine_id()
-    cron = prepare_cron(bus, quiet=is_single_turn)
+    cron = None if eval else prepare_cron(bus, quiet=is_single_turn)
     channels = prepare_agent_channel(
         config,
         bus,
@@ -878,7 +878,7 @@ def chat(
         try:
             if is_single_turn:
                 # Single-turn mode: run channels and agent, exit after response
-                task_cron = asyncio.create_task(cron.start())
+                task_cron = asyncio.create_task(cron.start()) if cron is not None else None
                 task_channels = asyncio.create_task(channels.start_all())
                 task_agent = asyncio.create_task(agent_loop.run())
 
@@ -890,15 +890,20 @@ def chat(
                 # Cancel all other tasks
                 for task in pending:
                     task.cancel()
-                task_cron.cancel()
+                if task_cron is not None:
+                    task_cron.cancel()
                 task_agent.cancel()
 
                 # Wait for cancellation
-                await asyncio.gather(task_cron, task_agent, return_exceptions=True)
+                background_tasks = [task_agent]
+                if task_cron is not None:
+                    background_tasks.append(task_cron)
+                await asyncio.gather(*background_tasks, return_exceptions=True)
             else:
                 # Interactive mode: run forever
                 tasks = []
-                tasks.append(cron.start())
+                if cron is not None:
+                    tasks.append(cron.start())
                 tasks.append(channels.start_all())
                 tasks.append(agent_loop.run())
 

@@ -1660,11 +1660,17 @@ class AsyncHTTPClient:
         mode: str = "vectors_only",
         wait: bool = True,
         dry_run: bool = False,
+        tags: Optional[List[str]] = None,
+        tag_mode: str = "replace",
     ) -> Dict[str, Any]:
+        payload = {"uri": uri, "mode": mode, "wait": wait, "dry_run": dry_run}
+        if tags is not None:
+            payload["tags"] = tags
+            payload["tag_mode"] = tag_mode
         response = await self._request(
             "POST",
             "/api/v1/content/reindex",
-            json={"uri": uri, "mode": mode, "wait": wait, "dry_run": dry_run},
+            json=payload,
         )
         return self._handle_response(response)
 
@@ -2610,8 +2616,19 @@ class SyncHTTPClient:
         mode: str = "vectors_only",
         wait: bool = True,
         dry_run: bool = False,
+        tags: Optional[List[str]] = None,
+        tag_mode: str = "replace",
     ) -> Dict[str, Any]:
-        return run_async(self._async_client.reindex(uri=uri, mode=mode, wait=wait, dry_run=dry_run))
+        kwargs = {
+            "uri": uri,
+            "mode": mode,
+            "wait": wait,
+            "dry_run": dry_run,
+        }
+        if tags is not None:
+            kwargs["tags"] = tags
+            kwargs["tag_mode"] = tag_mode
+        return run_async(self._async_client.reindex(**kwargs))
 
     def admin_create_account(
         self,

@@ -268,6 +268,28 @@ func TestReindexSendsDryRun(t *testing.T) {
 	}
 }
 
+func TestReindexSendsExplicitEmptyTags(t *testing.T) {
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readJSONBody(t, r)
+		tags, ok := body["tags"].([]any)
+		if !ok || len(tags) != 0 {
+			t.Fatalf("tags = %#v", body["tags"])
+		}
+		if got := body["tag_mode"]; got != "replace" {
+			t.Fatalf("tag_mode = %#v", got)
+		}
+		writeOK(t, w, map[string]any{"status": "completed"})
+	}))
+	defer closeServer()
+
+	if _, err := client.Reindex(context.Background(), "resources/demo", &ReindexOptions{
+		Tags:    []string{},
+		TagMode: "replace",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminCreatePathsAcceptInitialUserConfig(t *testing.T) {
 	var seen []map[string]any
 	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

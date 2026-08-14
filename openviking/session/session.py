@@ -22,10 +22,7 @@ from openviking.pyagfs.exceptions import AGFSClientError, AGFSHTTPError, AGFSNot
 from openviking.server.config import ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.session.auto_commit_policy import AutoCommitPolicy
-from openviking.session.memory.constants import (
-    AGENT_EVOLUTION_MEMORY_TYPES,
-    EXECUTION_MEMORY_TYPES,
-)
+from openviking.session.memory.constants import AGENT_EVOLUTION_MEMORY_TYPES
 from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.retention import (
     RETENTION_MODE_TURN_BUDGET,
@@ -60,7 +57,7 @@ from openviking_cli.utils import get_logger, run_async
 from openviking_cli.utils.config import get_openviking_config
 
 if TYPE_CHECKING:
-    from openviking.session.compressor_v2 import SessionCompressorV2 as SessionCompressor
+    from openviking.session.compressor_v3 import SessionCompressorV3 as SessionCompressor
     from openviking.storage import VikingDBManager
     from openviking.storage.queuefs.session_commit_msg import SessionCommitMsg
     from openviking.storage.viking_fs import VikingFS
@@ -72,9 +69,9 @@ _PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS = 1800.0
 _MEMORY_EXTRACTION_MAX_RETRIES = 3
 _MEMORY_EXTRACTION_RETRY_BASE_DELAY_SECONDS = 1.0
 _MEMORY_EXTRACTION_RETRY_MAX_DELAY_SECONDS = 8.0
-_AGENT_TRAINING_REQUIRED_MEMORY_TYPES = frozenset({"cases", "trajectories"})
+_AGENT_TRAINING_REQUIRED_MEMORY_TYPES = frozenset({"experiences"})
 _SESSION_PHASE1_LOCK_TIMEOUT_SECONDS = 30.0
-_MEMORY_STEP_NAMES = ("long_term", "execution")
+_MEMORY_STEP_NAMES = ("long_term",)
 _CUMULATIVE_CHECKPOINT_VERSION = 2
 
 
@@ -149,14 +146,6 @@ def _agent_memory_skip_reason(
     if not _AGENT_TRAINING_REQUIRED_MEMORY_TYPES.issubset(effective_memory_types):
         return "memory_types_filtered"
     return None
-
-
-def _split_policy_memory_types(
-    memory_types: Optional[set[str]],
-) -> tuple[Optional[set[str]], Optional[set[str]]]:
-    if memory_types is None:
-        return None, None
-    return memory_types - EXECUTION_MEMORY_TYPES, memory_types & EXECUTION_MEMORY_TYPES
 
 
 def _default_memory_counts() -> Dict[str, int]:
@@ -2528,7 +2517,7 @@ class Session:
                         )
                         return result
 
-                    # Summary, long-term memory, and execution-derived memory run concurrently.
+                    # Summary and V3 long-term memory extraction run concurrently.
                     memory_extraction_enabled = ov_config.memory.extraction_enabled
                     config_session_skill_extraction_enabled = (
                         ov_config.memory.session_skill_extraction_enabled
@@ -2543,28 +2532,12 @@ class Session:
                     )
                     self_memory_enabled = extraction_scope.allow_self_memory
                     allowed_peer_ids = extraction_scope.allowed_peer_ids
-                    session_skill_extraction_enabled = extraction_scope.include_session_skills
-                    memory_type_filter = extraction_scope.memory_types
-                    has_execution_memory = hasattr(
-                        self._session_compressor, "extract_execution_memories"
-                    )
-                    if has_execution_memory:
-                        long_term_memory_types, execution_memory_types = _split_policy_memory_types(
-                            memory_type_filter
-                        )
-                    else:
-                        long_term_memory_types = memory_type_filter
-                        execution_memory_types = set()
+                    long_term_memory_types = extraction_scope.memory_types
 
                     long_term_messages = [
                         message
                         for message in extraction_messages
                         if message.id not in completed_memory_steps.get("long_term", set())
-                    ]
-                    execution_messages = [
-                        message
-                        for message in extraction_messages
-                        if message.id not in completed_memory_steps.get("execution", set())
                     ]
 
                     long_term_has_work = (
@@ -2573,17 +2546,7 @@ class Session:
                         and (long_term_memory_types is None or bool(long_term_memory_types))
                         and bool(long_term_messages)
                     )
-                    execution_memory_has_work = (
-                        self_memory_enabled
-                        and memory_extraction_enabled
-                        and (execution_memory_types is None or bool(execution_memory_types))
-                        and bool(execution_messages)
-                    )
-                    session_skill_extraction_enabled = (
-                        session_skill_extraction_enabled and execution_memory_has_work
-                    )
-                    has_policy_work = bool(long_term_has_work or execution_memory_has_work)
-                    if self._session_compressor and has_policy_work:
+                    if working_memory_enabled or (self._session_compressor and long_term_has_work):
                         logger.info(
                             "Starting post-commit extraction from %s archived messages",
                             len(messages),
@@ -2597,7 +2560,7 @@ class Session:
                             )
                             extraction_labels.append("archive_summary")
 
-                        if long_term_has_work:
+                        if self._session_compressor and long_term_has_work:
 
                             async def _run_long_term_memory_extraction() -> Any:
                                 # strict_extract_errors=True lets transient failures
@@ -2628,31 +2591,6 @@ class Session:
                                 )
                             )
                             extraction_labels.append("long_term")
-
-                        if has_execution_memory and execution_memory_has_work:
-
-                            async def _run_execution_memory_extraction() -> Any:
-                                # See _run_long_term_memory_extraction: surface errors
-                                # so retries can engage and final failures are visible.
-                                return await self._session_compressor.extract_execution_memories(
-                                    messages=execution_messages,
-                                    ctx=self.ctx,
-                                    strict_extract_errors=True,
-                                    latest_archive_overview=latest_archive_overview,
-                                    archive_uri=archive_uri,
-                                    allowed_memory_types=execution_memory_types,
-                                    include_session_skills=session_skill_extraction_enabled,
-                                )
-
-                            extraction_tasks.append(
-                                _run_recorded_memory_step(
-                                    "execution_memory_extraction",
-                                    "execution",
-                                    execution_messages,
-                                    _run_execution_memory_extraction,
-                                )
-                            )
-                            extraction_labels.append("execution")
 
                         _results = await asyncio.gather(
                             *extraction_tasks,
@@ -4046,7 +3984,13 @@ class Session:
             ctx=self.ctx,
         )
         messages: List[Message] = []
-        for line_number, line in enumerate(content.splitlines(), start=1):
+        # Split on "\n" only, not str.splitlines(): the latter also treats
+        # U+2028 / U+2029 / NEL (\x85) / \r / \v / \f as line boundaries, which
+        # would cut a JSONL record in half when those characters appear inside a
+        # JSON string value (e.g. assistant tool_output) and break json.loads()
+        # with "Unterminated string". Normalize CRLF first so a trailing "\r"
+        # does not leak into the record. See issue #3984.
+        for line_number, line in enumerate(content.replace("\r\n", "\n").split("\n"), start=1):
             if not line.strip():
                 continue
             try:

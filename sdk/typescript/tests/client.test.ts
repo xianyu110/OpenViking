@@ -99,6 +99,26 @@ describe("OpenVikingClient", () => {
     });
   });
 
+  it("sends explicit empty tags for reindex requests", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(ok({ status: "completed" }));
+    const client = new OpenVikingClient({
+      baseUrl: "https://example.com",
+      fetch: fetcher,
+    });
+
+    await client.reindex("resources", {
+      tags: [],
+      tagMode: "replace",
+    });
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({
+      tags: [],
+      tag_mode: "replace",
+    });
+  });
+
   it("sends processing_mode for addResource requests", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(ok({}));
     const client = new OpenVikingClient({

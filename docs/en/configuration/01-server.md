@@ -218,7 +218,7 @@ This setting controls queue-job concurrency. It is separate from `vlm.media.max_
 
 | Field | Type | Default | Description |
 |---|---|---:|---|
-| `max_concurrent` | integer | `4` | Number of SessionCommit jobs consumed concurrently; must be greater than `0`; requires a server restart after changes |
+| `max_concurrent` | integer | `8` | Number of SessionCommit jobs consumed concurrently; must be greater than `0`; requires a server restart after changes |
 
 ## HTTP Server Settings
 

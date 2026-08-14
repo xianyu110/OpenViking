@@ -459,13 +459,22 @@ impl HttpClient {
         mode: &str,
         wait: bool,
         dry_run: bool,
+        tags: Vec<String>,
+        tag_mode: &str,
     ) -> Result<serde_json::Value> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "uri": uri,
             "mode": mode,
             "wait": wait,
             "dry_run": dry_run,
         });
+        if !tags.is_empty() {
+            let obj = body
+                .as_object_mut()
+                .expect("reindex request body must be an object");
+            obj.insert("tags".to_string(), serde_json::json!(tags));
+            obj.insert("tag_mode".to_string(), serde_json::json!(tag_mode));
+        }
         self.post("/api/v1/content/reindex", &body).await
     }
 

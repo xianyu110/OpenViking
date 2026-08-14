@@ -1384,6 +1384,8 @@ pub async fn handle_reindex(
     mode: String,
     wait: bool,
     dry_run: bool,
+    tags: Vec<String>,
+    tag_mode: String,
     ctx: CliContext,
 ) -> Result<()> {
     let client = ctx.get_client();
@@ -1393,6 +1395,8 @@ pub async fn handle_reindex(
         &mode,
         wait,
         dry_run,
+        tags,
+        &tag_mode,
         ctx.output_format,
         ctx.compact,
     )
