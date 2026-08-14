@@ -10,7 +10,7 @@ import zipfile
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -66,6 +66,17 @@ ERROR_CODE_TO_EXCEPTION = {
 GATEWAY_MARKER_HEADER = "X-VikingBot-Gateway"
 GATEWAY_TOKEN_HEADER = "X-Gateway-Token"
 _SESSION_CONFIG_UNSET = object()
+
+
+def _is_explicit_local_path(path: str) -> bool:
+    value = path.strip()
+    if not value:
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme:
+        return False
+    expanded = Path(value).expanduser()
+    return expanded.is_absolute() or value.startswith(("./", "../", "~/"))
 
 
 def _image_mime_type(file_name: str = "") -> str:
@@ -731,20 +742,22 @@ class AsyncHTTPClient:
         if preserve_structure is not None:
             request_data["preserve_structure"] = preserve_structure
 
-        path_obj = Path(path)
+        path_obj = Path(path).expanduser()
         if not add_type and path_obj.exists():
             if path_obj.is_dir():
                 request_data["source_name"] = path_obj.name
-                zip_path = self._zip_directory(path)
+                zip_path = self._zip_directory(str(path_obj))
                 try:
                     request_data["temp_file_id"] = await self._upload_temp_file(zip_path)
                 finally:
                     Path(zip_path).unlink(missing_ok=True)
             elif path_obj.is_file():
                 request_data["source_name"] = path_obj.name
-                request_data["temp_file_id"] = await self._upload_temp_file(path)
+                request_data["temp_file_id"] = await self._upload_temp_file(str(path_obj))
             else:
                 request_data["path"] = path
+        elif not add_type and _is_explicit_local_path(path):
+            raise FileNotFoundError(f"Local resource file not found: {path}")
         else:
             request_data["path"] = path
 

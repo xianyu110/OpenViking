@@ -537,6 +537,20 @@ async def test_add_resource_uploads_local_file_even_when_url_is_localhost(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_add_resource_fails_fast_when_explicit_local_file_is_missing(tmp_path):
+    client = AsyncHTTPClient(url="http://127.0.0.1:1933")
+    fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))
+    client._http = fake_http
+
+    missing_path = tmp_path / "missing.pdf"
+
+    with pytest.raises(FileNotFoundError, match="Local resource file not found"):
+        await client.add_resource(str(missing_path))
+
+    fake_http.post.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_add_resource_forwards_processing_mode():
     client = AsyncHTTPClient(url="http://127.0.0.1:1933")
     fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))

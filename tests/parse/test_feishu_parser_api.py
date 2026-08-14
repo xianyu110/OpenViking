@@ -943,6 +943,57 @@ async def test_add_resource_processor_persists_final_resource_uri(monkeypatch):
     assert queue_manager.enqueue.await_args.args[0] == QueueManager.ADD_RESOURCE
 
 
+@pytest.mark.asyncio
+async def test_add_resource_processor_marks_background_failure(monkeypatch):
+    service = SimpleNamespace(
+        execute_add_resource_job=AsyncMock(side_effect=RuntimeError("download failed")),
+    )
+    task_tracker = SimpleNamespace(
+        create=AsyncMock(return_value=SimpleNamespace(status=TaskStatus.PENDING)),
+        start=AsyncMock(),
+        update_stage=AsyncMock(),
+        complete=AsyncMock(),
+        fail=AsyncMock(),
+        wait_for_descendants=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "openviking.storage.queuefs.add_resource_processor.get_task_tracker",
+        Mock(return_value=task_tracker),
+    )
+    processor = AddResourceProcessor(
+        service,
+        asyncio.get_running_loop(),
+        QueueManager.ADD_RESOURCE,
+        SimpleNamespace(_async_agfs=SimpleNamespace(pathlock_release=AsyncMock())),
+    )
+    msg = AddResourceMsg(
+        task_id="task-1",
+        path="https://example.invalid/missing.pdf",
+        root_uri="viking://resources/missing",
+        account_id="account-1",
+        user_id="user-1",
+        role="user",
+    )
+
+    data = msg.to_dict()
+    data[TASK_WORK_ID_FIELD] = "work-1"
+    await processor._process(msg, data)
+
+    task_tracker.start.assert_awaited_once_with(
+        "task-1",
+        account_id="account-1",
+        user_id="user-1",
+        stage="queued",
+    )
+    task_tracker.fail.assert_awaited_once_with(
+        "task-1",
+        "download failed",
+        account_id="account-1",
+        user_id="user-1",
+    )
+    task_tracker.complete.assert_not_called()
+
+
 def test_feishu_direct_submission_requires_configured_auth(monkeypatch):
     api = _understanding_api_for_parse()
     source = "https://example.larkoffice.com/docx/doxcnToken"
